@@ -23,9 +23,11 @@ fn main() -> Result<()> {
             #[allow(unused_variables)]
             let page_size = u16::from_be_bytes([header[16], header[17]]);
 
-            // You can use print statements as follows for debugging, they'll be visible when running tests.
-            // Uncomment this block to pass the first stage
             println!("database page size: {}", page_size);
+            let mut page_header = [0; 12];
+            file.read_exact(&mut page_header)?;
+            let cells = u16::from_be_bytes([page_header[3], page_header[4]]);
+            println!("number of tables: {}", cells);
         }
         _ => bail!("Missing or invalid command passed: {}", command),
     }
