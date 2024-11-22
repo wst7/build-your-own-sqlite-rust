@@ -1,6 +1,13 @@
 use anyhow::{bail, Result};
+use db::Db;
+use page::Page;
 use std::fs::File;
 use std::io::prelude::*;
+
+mod db;
+mod page;
+mod utils;
+mod record;
 
 fn main() -> Result<()> {
     // Parse arguments
@@ -28,6 +35,25 @@ fn main() -> Result<()> {
             file.read_exact(&mut page_header)?;
             let cells = u16::from_be_bytes([page_header[3], page_header[4]]);
             println!("number of tables: {}", cells);
+        }
+        ".tables" => {
+            let mut db = Db::from_file(&args[1])?;
+            let page = db.pager.read_page(1).unwrap();
+            match page {
+                Page::TableLeaf(leaf) => {
+                    let mut table_names = Vec::new();
+                    for cell in &leaf.cells {
+                        if let Some(name) = cell.record.body.get(2) {
+                            if let crate::record::Value::String(table_name) = &name.value {
+                                table_names.push(table_name.clone());
+                            }
+                        }
+                    }
+                    table_names.sort();
+                    println!("{}", table_names.join(" "));
+                }
+                _ => bail!("Invalid page type"),
+            }
         }
         _ => bail!("Missing or invalid command passed: {}", command),
     }
