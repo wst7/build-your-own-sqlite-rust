@@ -8,6 +8,7 @@ mod db;
 mod page;
 mod utils;
 mod record;
+mod sql;
 
 fn main() -> Result<()> {
     // Parse arguments
@@ -54,6 +55,10 @@ fn main() -> Result<()> {
                 }
                 _ => bail!("Invalid page type"),
             }
+        }
+        sql => {
+            let mut db = Db::from_file(&args[1])?;
+            db.execute(sql);
         }
         _ => bail!("Missing or invalid command passed: {}", command),
     }

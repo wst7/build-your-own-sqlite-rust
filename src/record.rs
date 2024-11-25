@@ -2,7 +2,7 @@ use core::str;
 
 use crate::utils::read_varint_at;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum RecordFieldType {
     Null,
     I8,
@@ -19,14 +19,14 @@ pub enum RecordFieldType {
     Variable
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RecordField {
     pub offset: usize,
     pub field_size: usize,
     pub field_type: RecordFieldType,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RecordHeader {
     pub fields: Vec<RecordField>,
 }
@@ -81,12 +81,12 @@ impl RecordHeader {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RecordBody {
     pub value: Value,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Record {
     pub header: RecordHeader,
     pub body: Vec<RecordBody>,
@@ -139,7 +139,7 @@ impl Record {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Value {
     Null,
     I8(i8),

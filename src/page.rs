@@ -12,7 +12,7 @@ const PAGE_CELL_CONTENT_OFFSET: usize = 5;
 const PAGE_FRAGMENTED_BYTES_COUNT_OFFSET: usize = 7;
 
 
-
+#[derive(Debug, Clone)]
 pub enum Page {
     TableLeaf(TableLeafPage),
 }
@@ -38,6 +38,7 @@ impl Page {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct TableLeafPage {
     pub header: PageHeader,
     pub cell_pointers: Vec<u16>,
@@ -64,7 +65,7 @@ impl TableLeafPage {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PageHeader {
     page_type: PageType,
     first_freeblock: u16,
@@ -96,12 +97,12 @@ impl PageHeader {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PageType {
     TableLeaf,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TableLeafCell {
     pub size: u64,
     pub row_id: u64,
