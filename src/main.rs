@@ -58,7 +58,7 @@ fn main() -> Result<()> {
         }
         sql => {
             let mut db = Db::from_file(&args[1])?;
-            db.execute(sql);
+            let _ = db.execute(sql);
         }
         _ => bail!("Missing or invalid command passed: {}", command),
     }

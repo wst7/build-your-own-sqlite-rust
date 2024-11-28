@@ -1,6 +1,6 @@
 use anyhow::Ok;
 
-use crate::{db::HEADER_SIZE, record::Record, utils::{read_be_word_at, read_varint_at}};
+use crate::{db::HEADER_SIZE, record::Record, utils::{read_be_word_at, read_varint}};
 
 
 pub const TABLE_LEAF_PAGE_ID: u8 = 0x0d;
@@ -45,18 +45,25 @@ pub struct TableLeafPage {
     pub cells: Vec<TableLeafCell>,
 }
 impl TableLeafPage {
-    pub fn parse(buffer: &[u8], ptr_offset: u16) -> anyhow::Result<Self> {
+    pub fn parse(buffer: &[u8], ptr_offset: u16) -> anyhow::Result<Self> { // all buffer starts db header
         let header = PageHeader::parse(buffer, ptr_offset)?;
-        let content_buffer = &buffer[ptr_offset as usize + PAGE_LEAF_HEADER_SIZE..];
-        let cell_pointers =
-            parse_cell_pointers(content_buffer, header.cell_count as usize, ptr_offset);
+
+        // 计算单元格指针区域的起始位置（紧跟在页面头部之后）
+        let cell_pointer_area_start = ptr_offset as usize + PAGE_LEAF_HEADER_SIZE;
         
-        let mut cells = Vec::new();
-        for &ptr in &cell_pointers {
-            let cell = TableLeafCell::parse(&content_buffer[ptr as usize - ptr_offset as usize - PAGE_LEAF_HEADER_SIZE..])?;
-            cells.push(cell);
-        }
+        // 解析单元格指针数组
+        let cell_pointers = parse_cell_pointers(
+            &buffer[cell_pointer_area_start..], 
+            header.cell_count as usize,
+            ptr_offset
+        );
         
+        // 解析每个单元格
+        let cells = cell_pointers.iter()
+        .map(|ptr| TableLeafCell::parse(&buffer[*ptr as usize..]))
+        .collect::<anyhow::Result<Vec<TableLeafCell>>>()?;
+        
+
         Ok(TableLeafPage {
             header,
             cell_pointers,
@@ -75,18 +82,32 @@ pub struct PageHeader {
 }
 impl PageHeader {
     pub fn parse(buffer: &[u8], ptr_offset: u16) -> anyhow::Result<Self> {
+        // 验证页面类型
         let page_type = match buffer[ptr_offset as usize] {
             TABLE_LEAF_PAGE_ID => PageType::TableLeaf,
-            _ => anyhow::bail!("Unknown page type in PageHeader parse: {}", buffer[0]),
+            other => anyhow::bail!("Unsupported page type: {}", other),
         };
-        let first_freeblock = read_be_word_at(buffer, PAGE_FIRST_FREEBLOCK_OFFSET);
-        let cell_count = read_be_word_at(&buffer[ptr_offset as usize..], PAGE_CELL_COUNT_OFFSET);
+
+        // 读取页面头部的各个字段
+        let first_freeblock = read_be_word_at(
+            buffer,
+            ptr_offset as usize + PAGE_FIRST_FREEBLOCK_OFFSET
+        );
         
-        let cell_content_offset = match read_be_word_at(&buffer[ptr_offset as usize..], PAGE_CELL_CONTENT_OFFSET) {
-            0 => 65_536,
-            n => n as u32,
-        };
-        let fragmented_bytes_count = buffer[ptr_offset as usize + PAGE_FRAGMENTED_BYTES_COUNT_OFFSET];
+        let cell_count = read_be_word_at(
+            buffer,
+            ptr_offset as usize + PAGE_CELL_COUNT_OFFSET
+        );
+        
+        let cell_content_offset = read_be_word_at(
+            buffer,
+            ptr_offset as usize + PAGE_CELL_CONTENT_OFFSET
+        ) as u32;  // 转换为 u32
+        
+        let fragmented_bytes_count = buffer[
+            ptr_offset as usize + PAGE_FRAGMENTED_BYTES_COUNT_OFFSET
+        ];
+
         Ok(PageHeader {
             page_type,
             first_freeblock,
@@ -106,7 +127,6 @@ pub enum PageType {
 pub struct TableLeafCell {
     pub size: u64,
     pub row_id: u64,
-    // pub payload: Vec<u8>,
     pub record: Record
 }
 
@@ -117,20 +137,20 @@ impl TableLeafCell {
     // A varint which is the integer key, a.k.a. "rowid"
     // The initial portion of the payload that does not spill to overflow pages.
     // A 4-byte big-endian integer page number for the first page of the overflow page list - omitted if all payload fits on the b-tree page.
-    pub fn parse(buffer: &[u8]) -> anyhow::Result<Self> {
-        let (n, size) = read_varint_at(buffer, 0)?;
-        let buffer = &buffer[n as usize..];
+    pub fn parse(cell_buffer: &[u8]) -> anyhow::Result<Self> {
+        // 有问题
+        let (n, payload_size) = read_varint(cell_buffer)?;
+        let buffer = &cell_buffer[n as usize..];
 
-        let (n, row_id) = read_varint_at(buffer, 0)?;
+        let (n, row_id) = read_varint(buffer)?;
         let buffer = &buffer[n as usize..]; //  start of payload
-
-        // Make sure we don't read beyond the buffer's length
-        let payload_size = std::cmp::min(size as usize, buffer.len());
-        let payload = buffer[..payload_size].to_vec();
         
+
+        let payload = buffer[..payload_size as usize].to_vec();
         let record = Record::parse(&payload)?;
+
         Ok(Self {
-            size,
+            size: payload_size as u64,
             row_id,
             record
         })

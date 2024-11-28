@@ -8,10 +8,13 @@ use std::{
 use anyhow::Context;
 
 use crate::{
-    page::{Page, TableLeafPage}, record::Value, sql::{
-        parser::{self, Stmt},
+    page::{Page, TableLeafPage},
+    record::Value,
+    sql::{
+        parser::{self, Expr, Stmt},
         scanner,
-    }, utils::read_be_word_at
+    },
+    utils::read_be_word_at,
 };
 
 pub const HEADER_SIZE: usize = 100;
@@ -54,7 +57,7 @@ impl Db {
         let pager = Pager::new(file, header.page_size as usize);
         Ok(Db { header, pager })
     }
-    pub fn execute(&mut self, sql: &str) {
+    pub fn execute(&mut self, sql: &str) -> anyhow::Result<()> {
         let mut scanner = scanner::Scanner::new(sql.to_string());
         let tokens = scanner.scan_tokens();
         let mut parser = parser::Parser::new(tokens.clone());
@@ -63,34 +66,75 @@ impl Db {
             match stmt {
                 Stmt::Select(columns, from, where_clause) => {
                     if let Some(table_ref) = from {
-                      
-                      let root_page = self.read_first_page().unwrap();
-                      match root_page {
-                          Page::TableLeaf(leaf_page) => {
-                            let mut table_index = None;
-                              for cell in &leaf_page.cells {
-                                 if let Value::String(name) = &cell.record.body.get(2).unwrap().value {
-                                    if name.to_lowercase() == table_ref.name.to_lowercase() {
-                                        table_index = cell.record.body.get(3).map(|col| col.value.clone());
-                                        break;
+                        if let Some(schema) = self.get_table_schema(&table_ref.name)? {
+                            let page = self.read_page(schema.root_page as usize)?;
+                            match page {
+                                Page::TableLeaf(table_page) => {
+                                    if columns.len() == 1 {
+                                        if let Expr::FunctionCall(iden, args) = &columns[0] {
+                                            self.execute_func(&columns[0], &table_page);
+                                        } else {
+                                            self.execute_query(
+                                                &columns,
+                                                &table_page,
+                                                &schema,
+                                            );
+                                        }
+                                    } else {
+                                        self.execute_query(
+                                            &columns,
+                                            &table_page,
+                                            &schema,
+                                        );
                                     }
-                                 }
-                              }
-                              if let Value::I8(index) = table_index.unwrap() {
-                                let page = self.read_page(index as usize).unwrap();
-                                match page {
-                                    Page::TableLeaf(table_page) => {
-                                        println!("{:?}", table_page.cells.len());
-                                    }
-                                    _ => {}
                                 }
-                              }
-                          }
-                          _ => {}
-                      }
+
+                                _ => {}
+                            }
+                        }
                     }
                 }
             }
+        }
+        anyhow::Ok(())
+    }
+    fn execute_func(&mut self, func: &Expr, page: &TableLeafPage) {
+        match func {
+            Expr::FunctionCall(iden, args) => {
+                if let Expr::Identifier(name) = iden.as_ref() {
+                    if name.to_lowercase() == "count"
+                        && args.len() == 1
+                        && args[0] == Expr::Wildcard
+                    {
+                        println!("{}", page.cells.len());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    fn execute_query(
+        &mut self,
+        columns: &[Expr],
+        table_page: &TableLeafPage,
+        schema: &TableSchema,
+    ) {
+        let column_names: Vec<String> = columns
+            .iter()
+            .map(|column| match column {
+                Expr::Identifier(name) => name.clone(),
+                _ => "".to_string(),
+            })
+            .collect();
+
+        for cell in &table_page.cells {
+            let mut row = Vec::new();
+            for (column, record_body) in schema.columns.iter().zip(cell.record.body.iter()) {
+                if column_names.contains(&column.name) {
+                    row.push(record_body.value.to_string());
+                }
+            }
+            println!("{}", row.join(", "));
         }
     }
     fn read_page(&mut self, page_num: usize) -> anyhow::Result<Page> {
@@ -99,8 +143,90 @@ impl Db {
     fn read_first_page(&mut self) -> anyhow::Result<Page> {
         self.read_page(1)
     }
+
+    pub fn get_schemas(&mut self) -> anyhow::Result<Vec<TableSchema>> {
+        let root_page = self.read_first_page()?;
+        let mut schemas = Vec::new();
+        if let Page::TableLeaf(leaf_page) = root_page {
+            for cell in leaf_page.cells {
+                // Schema table columns:
+                // 0: type (table, index, etc)
+                // 1: name
+                // 2: table_name
+                // 3: rootpage
+                // 4: sql
+
+                if let Some(schema_type_body) = cell.record.body.get(0) {
+                    if let Value::String(schema_type) = &schema_type_body.value {
+                        if schema_type == "table" {
+                            let name = match &cell.record.body.get(1).unwrap().value {
+                                Value::String(name) => name.clone(),
+                                _ => continue,
+                            };
+                            let root_page = match &cell.record.body.get(3).unwrap().value {
+                                Value::I8(n) => n.clone(),
+                                _ => continue,
+                            };
+                            let sql = match &cell.record.body.get(4).unwrap().value {
+                                Value::String(sql) => sql.clone(),
+                                _ => continue,
+                            };
+
+                            schemas.push(TableSchema {
+                                name,
+                                columns: parse_create_table_sql(&sql)?,
+                                root_page,
+                                sql,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        anyhow::Ok(schemas)
+    }
+
+    pub fn get_table_schema(&mut self, table_name: &str) -> anyhow::Result<Option<TableSchema>> {
+        let schemas = self.get_schemas()?;
+        // println!("schemas: {:#?}", schemas);
+        let schema = schemas
+            .into_iter()
+            .find(|s| s.name.to_lowercase() == table_name.to_lowercase());
+        anyhow::Ok(schema)
+    }
 }
 
+#[derive(Debug)]
+pub struct TableSchema {
+    name: String,
+    sql: String,
+    root_page: i8,
+    columns: Vec<Column>,
+}
+#[derive(Debug)]
+pub struct Column {
+    name: String,
+    type_name: String,
+}
+fn parse_create_table_sql(sql: &str) -> anyhow::Result<Vec<Column>> {
+    let mut columns = vec![];
+    let sql = sql.to_lowercase();
+    if let Some(start) = sql.find("(") {
+        if let Some(end) = sql.rfind(")") {
+            let column_defs = &sql[start + 1..end];
+            for column_def in column_defs.split(",") {
+                let parts = column_def.split_whitespace().collect::<Vec<&str>>();
+                if parts.len() >= 2 {
+                    columns.push(Column {
+                        name: parts[0].to_string(),
+                        type_name: parts[1].to_string(),
+                    });
+                }
+            }
+        }
+    }
+    anyhow::Ok(columns)
+}
 pub struct Pager<I: Read + Seek = std::fs::File> {
     input: I,
     page_size: usize,

@@ -19,7 +19,7 @@ pub struct TableReference {
     pub alias: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Expr {
     Identifier(String),
     Literal(Literal),
@@ -29,7 +29,7 @@ pub enum Expr {
     Aliased(Box<Expr>, String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Literal {
     String(String),
     Number(f64),
