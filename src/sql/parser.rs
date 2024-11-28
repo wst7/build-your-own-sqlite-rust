@@ -19,7 +19,7 @@ pub struct TableReference {
     pub alias: Option<String>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
     Identifier(String),
     Literal(Literal),
@@ -29,7 +29,7 @@ pub enum Expr {
     Aliased(Box<Expr>, String),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Literal {
     String(String),
     Number(f64),
@@ -105,6 +105,10 @@ impl Parser {
             if self.peek_next().token_type == TokenType::LeftParen {
                 return self.function_call();
             }
+
+            if self.peek_next().token_type == TokenType::Equal {
+                return self.binary();
+            }
         }
         self.primary()
     }
@@ -128,6 +132,13 @@ impl Parser {
             "Expected ')' after function arguments",
         )?;
         Ok(Expr::FunctionCall(Box::new(Expr::Identifier(name)), args))
+    }
+
+    fn binary(&mut self) -> anyhow::Result<Expr> {
+        let left = self.primary()?.clone();
+        let op = self.advance().clone();
+        let right = self.primary()?;
+        Ok(Expr::BinaryOp(Box::new(left), op, Box::new(right)))
     }
     fn primary(&mut self) -> anyhow::Result<Expr> {
         if self.matches(&[TokenType::Identifier]) {

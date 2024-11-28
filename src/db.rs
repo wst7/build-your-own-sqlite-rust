@@ -11,7 +11,7 @@ use crate::{
     page::{Page, TableLeafPage},
     record::Value,
     sql::{
-        parser::{self, Expr, Stmt},
+        parser::{self, Expr, Literal, Stmt},
         scanner,
     },
     utils::read_be_word_at,
@@ -60,6 +60,7 @@ impl Db {
     pub fn execute(&mut self, sql: &str) -> anyhow::Result<()> {
         let mut scanner = scanner::Scanner::new(sql.to_string());
         let tokens = scanner.scan_tokens();
+        // println!("tokens: {:#?}", tokens);
         let mut parser = parser::Parser::new(tokens.clone());
         let stmts = parser.parse().unwrap();
         for stmt in stmts {
@@ -78,6 +79,7 @@ impl Db {
                                                 &columns,
                                                 &table_page,
                                                 &schema,
+                                                where_clause
                                             );
                                         }
                                     } else {
@@ -85,6 +87,7 @@ impl Db {
                                             &columns,
                                             &table_page,
                                             &schema,
+                                            where_clause
                                         );
                                     }
                                 }
@@ -118,6 +121,7 @@ impl Db {
         columns: &[Expr],
         table_page: &TableLeafPage,
         schema: &TableSchema,
+        where_clause: Option<Expr>
     ) {
         let column_names: Vec<String> = columns
             .iter()
@@ -126,15 +130,30 @@ impl Db {
                 _ => "".to_string(),
             })
             .collect();
+        let mut where_column = "".to_string();
+        let mut where_value = "".to_string();
+        let mut where_op = "".to_string();
+        
+        if let Some(where_clause) = where_clause {
+          match where_clause {
+              Expr::BinaryOp(left, op, right) => {
+                where_column = if let Expr::Identifier(name) = left.as_ref() { name.to_string() } else { "".to_string() };
+                where_value = if let Expr::Literal(Literal::String(value)) = right.as_ref() { value.to_string() } else { "".to_string() };
+                where_op = op.lexeme.clone();
+              }
+              _ => {}
+          }
+        }
             
         for cell in &table_page.cells {
             let mut row_map = HashMap::<String, String>::new();
             let mut row = Vec::new();
             for (column, record_body) in schema.columns.iter().zip(cell.record.body.iter()) {
               row_map.insert(column.name.clone(), record_body.value.to_string());
-                // if column_names.contains(&column.name) {
-                //     row.push(record_body.value.to_string());
-                // }
+            }
+            let checked = self.check(&where_column, &where_value, &where_op, &row_map);
+            if !checked {
+                continue;
             }
             for column_name in column_names.iter() {
                 if let Some(value) = row_map.get(column_name) {
@@ -146,6 +165,20 @@ impl Db {
             println!("{}", row.join("|"));
         }
     }
+
+    fn check(&mut self, where_column: &str, where_value: &str, where_op: &str, row_map: &HashMap<String, String>) -> bool {
+        let column_value = row_map.get(where_column);
+        match column_value {
+            Some(value) => {
+                match where_op {
+                    "=" => value == where_value,
+                    _ => false,
+                }
+            },
+            None => true,
+        }
+    }
+
     fn read_page(&mut self, page_num: usize) -> anyhow::Result<Page> {
         self.pager.read_page(page_num).map(|page| page.clone())
     }

@@ -39,6 +39,7 @@ impl Scanner {
             '.' => self.add_token(TokenType::Dot, None),
             ';' => self.add_token(TokenType::Semicolon, None),
             '*' => self.add_token(TokenType::Star, None),
+            '=' => self.add_token(TokenType::Equal, None),
             ' ' | '\r' | '\t' => (),
             '\n' => self.line += 1,
             '"' => self.string('"'),
@@ -101,6 +102,7 @@ impl Scanner {
         let text = self.source[self.start..self.current].to_string();
         let token_type = keywords::get(&text)
             .unwrap_or(TokenType::Identifier);
+        // println!("{token_type:?},   {text}");
 
         self.add_token(token_type, None);
     }

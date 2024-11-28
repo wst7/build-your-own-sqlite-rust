@@ -1,7 +1,7 @@
 #[derive(Debug, PartialEq, Clone)]
 pub enum TokenType {
     // Single-character tokens
-    LeftParen, RightParen, Comma, Dot, Semicolon, Star,
+    LeftParen, RightParen, Comma, Dot, Semicolon, Star, Equal,
     
     // Literals
     Identifier, String, Number,
