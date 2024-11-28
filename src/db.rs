@@ -60,7 +60,7 @@ impl Db {
     pub fn execute(&mut self, sql: &str) -> anyhow::Result<()> {
         let mut scanner = scanner::Scanner::new(sql.to_string());
         let tokens = scanner.scan_tokens();
-        // println!("tokens: {:#?}", tokens);
+        println!("tokens: {:#?}", tokens);
         let mut parser = parser::Parser::new(tokens.clone());
         let stmts = parser.parse().unwrap();
         for stmt in stmts {
