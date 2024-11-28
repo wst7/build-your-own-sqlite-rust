@@ -57,6 +57,7 @@ impl Parser {
         if self.matches(&[TokenType::Select]) {
             return Ok(self.select_stmt()?);
         }
+        println!("peek: {:?}", self.peek());
         todo!()
     }
     fn select_stmt(&mut self) -> anyhow::Result<Stmt> {
