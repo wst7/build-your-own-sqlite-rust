@@ -126,12 +126,21 @@ impl Db {
                 _ => "".to_string(),
             })
             .collect();
-
+            
         for cell in &table_page.cells {
+            let mut row_map = HashMap::<String, String>::new();
             let mut row = Vec::new();
             for (column, record_body) in schema.columns.iter().zip(cell.record.body.iter()) {
-                if column_names.contains(&column.name) {
-                    row.push(record_body.value.to_string());
+              row_map.insert(column.name.clone(), record_body.value.to_string());
+                // if column_names.contains(&column.name) {
+                //     row.push(record_body.value.to_string());
+                // }
+            }
+            for column_name in column_names.iter() {
+                if let Some(value) = row_map.get(column_name) {
+                    row.push(value.clone());
+                } else {
+                    row.push("".to_string());
                 }
             }
             println!("{}", row.join("|"));
