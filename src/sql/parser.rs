@@ -71,6 +71,7 @@ impl Parser {
         } else {
             None
         };
+        println!("select {:?} from {:?} where {:?}", columns, from, where_clause);
         Ok(Stmt::Select(columns, from, where_clause))
     }
     fn select_list(&mut self) -> anyhow::Result<Vec<Expr>> {
