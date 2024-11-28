@@ -134,7 +134,7 @@ impl Db {
                     row.push(record_body.value.to_string());
                 }
             }
-            println!("{}", row.join(", "));
+            println!("{}", row.join("|"));
         }
     }
     fn read_page(&mut self, page_num: usize) -> anyhow::Result<Page> {
