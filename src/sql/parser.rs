@@ -57,7 +57,6 @@ impl Parser {
         if self.matches(&[TokenType::Select]) {
             return Ok(self.select_stmt()?);
         }
-        println!("peek: {:?}", self.peek());
         todo!()
     }
     fn select_stmt(&mut self) -> anyhow::Result<Stmt> {
@@ -72,7 +71,7 @@ impl Parser {
         } else {
             None
         };
-        println!("select {:?} from {:?} where {:?}", columns, from, where_clause);
+        // println!("select {:?} from {:?} where {:?}", columns, from, where_clause);
         Ok(Stmt::Select(columns, from, where_clause))
     }
     fn select_list(&mut self) -> anyhow::Result<Vec<Expr>> {

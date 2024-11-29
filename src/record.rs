@@ -43,7 +43,6 @@ impl RecordHeader {
         while !buffer.is_empty() && current_offset < header_length as usize {
             let (byte_read, field_type) = read_varint(buffer)?;
            
-            
             let (field_type, field_size) = match field_type {
                 0 => (RecordFieldType::Null, 0),
                 1 => (RecordFieldType::I8, 1),
@@ -67,13 +66,11 @@ impl RecordHeader {
             };
             
             fields.push(RecordField {
-                // offset: current_offset,
                 field_size,
                 field_type,
             });
             buffer = &buffer[byte_read..];
-            current_offset += byte_read; 
-           
+            current_offset += byte_read;
         }
         
         Ok((RecordHeader { fields }, current_offset as usize ))
@@ -92,22 +89,40 @@ pub struct Record {
 }
 
 impl Record {
-    pub fn parse(payload: &[u8]) -> anyhow::Result<Self> {
+    pub fn parse(payload: &[u8], row_id: u64) -> anyhow::Result<Self> {
         let (header, header_length) = RecordHeader::parse(payload)?;
         let mut body = Vec::new();
         let mut offset = header_length;
         for field in header.fields.iter() {
             let value = match field.field_type {
-                RecordFieldType::Null => Value::Null,
-                RecordFieldType::I8 => Value::I8(read_i8_at(payload, offset)),
-                RecordFieldType::I16 => Value::I16(read_i16_at(payload, offset)),
-                RecordFieldType::I24 => Value::I24(read_i24_at(payload, offset)),
-                RecordFieldType::I32 => Value::I32(read_i32_at(payload, offset)),
-                RecordFieldType::I48 => Value::I48(read_i48_at(payload, offset)),
-                RecordFieldType::I64 => Value::I64(read_i64_at(payload, offset)),
+                RecordFieldType::Null => Value::I64(row_id as i64),
+                RecordFieldType::I8 => {
+                    let val = read_i8_at(payload, offset);
+                    Value::I64(val as i64)
+                },
+                RecordFieldType::I16 => {
+                    let val = read_i16_at(payload, offset);
+                    Value::I64(val as i64)
+                },
+                RecordFieldType::I24 => {
+                    let val = read_i24_at(payload, offset);
+                    Value::I64(val as i64)
+                },
+                RecordFieldType::I32 => {
+                    let val = read_i32_at(payload, offset);
+                    Value::I64(val as i64)
+                },
+                RecordFieldType::I48 => {
+                    let val = read_i48_at(payload, offset);
+                    Value::I64(val)
+                },
+                RecordFieldType::I64 => {
+                    let val = read_i64_at(payload, offset);
+                    Value::I64(val)
+                },
                 RecordFieldType::Float => Value::Float(read_f64_at(payload, offset)),
-                RecordFieldType::Zero => Value::Zero,
-                RecordFieldType::One => Value::One,
+                RecordFieldType::Zero => Value::I64(0),
+                RecordFieldType::One => Value::I64(1),
                 RecordFieldType::String => {
                     let value = String::from_utf8(payload[offset..offset + field.field_size].to_vec())?;
                     Value::String(value)
@@ -119,40 +134,27 @@ impl Record {
                 RecordFieldType::Variable => Value::Null,
             };
             body.push(RecordBody { value });
-            offset += field.field_size; 
+            offset += field.field_size;
         }
         Ok(Record { header, body })
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Null,
-    I8(i8),
-    I16(i16),
-    I24(i32),
-    I32(i32),
-    I48(i64),
     I64(i64),
     Float(f64),
-    Zero,
-    One,
     String(String),
     Blob(Vec<u8>),
 }
+
 impl ToString for Value {
     fn to_string(&self) -> String {
         match self {
-            Self::Null => format!("Null"),
-            Self::I8(n) => format!("{n}"),
-            Self::I16(n) => format!("{n}"),
-            Self::I24(n) => format!("{n}"),
-            Self::I32(n) => format!("{n}"),
-            Self::I48(n) => format!("{n}"),
+            Self::Null => format!("NULL"),
             Self::I64(n) => format!("{n}"),
             Self::Float(n) => format!("{n}"),
-            Self::Zero => format!("Zero"),
-            Self::One => format!("One"),
             Self::String(s) => s.clone(),
             Self::Blob(v) => std::str::from_utf8(v).unwrap().to_string(),
         }

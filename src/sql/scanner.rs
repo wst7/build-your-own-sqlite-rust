@@ -94,7 +94,7 @@ impl Scanner {
 
     fn identifier(&mut self) {
         let mut c = self.peek();
-        while c.is_alphabetic() || c == '-' {
+        while c.is_alphabetic() || c == '_' {
             self.advance();
             c = self.peek();
         }
