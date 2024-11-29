@@ -18,6 +18,28 @@ const PAGE_CELL_CONTENT_OFFSET: usize = 5;
 const PAGE_FRAGMENTED_BYTES_COUNT_OFFSET: usize = 7;
 const PAGE_RIGHT_MOST_POINTER_OFFSET: usize = 8;
 
+
+  /**
+
+                    [Interior Table Page (Root)]
+                    +---------------------------+
+                    | Left Child  | RowID | Right Child |
+                    +---------------------------+
+                        /                            \
+                        /                              \
+        [Interior Table Page]                 [Leaf Table Page]
+        +---------------------+                +----------------------+
+        | Left Child | RowID  |               | RowID | Record (Row) |
+        +---------------------+               +----------------------+
+            /         \                             /         \        
+            /           \                           /           \
+    [Leaf Table Page]  [Leaf Table Page]   [RowID=3]   [RowID=5]
+    +----------------+  +----------------+
+    | RowID | Record |  | RowID | Record |
+    +----------------+  +----------------+
+    */
+
+
 #[derive(Debug, Clone)]
 pub enum Page {
     TableLeaf(TableLeafPage),
@@ -34,8 +56,9 @@ impl Page {
         // The cell content area
         // The reserved region
         let ptr_offset = if page_num == 1 { HEADER_SIZE as u16 } else { 0 };
-
-        match buffer[ptr_offset as usize] {
+        let page_type = buffer[ptr_offset as usize];
+       
+        match page_type {
             TABLE_LEAF_PAGE_ID => {
                 let page = TableLeafPage::parse(buffer, ptr_offset)?;
                 Ok(Self::TableLeaf(page))
@@ -44,7 +67,17 @@ impl Page {
                 let page = TableInteriorPage::parse(buffer, ptr_offset)?;
                 Ok(Self::TableInterior(page))
             }
-            _ => anyhow::bail!("Unknown page type in page parse: {}", buffer[100]),
+            _ => {
+                println!("page type: {}", page_type);
+                anyhow::bail!("Unknown page type in page parse: {}", page_type)
+            }
+        }
+    }
+
+    pub fn get_page_type(&self) -> &PageType {
+        match self {
+            Page::TableLeaf(page) => page.header.get_page_type(),
+            Page::TableInterior(page) => page.header.get_page_type(),
         }
     }
 }
@@ -52,7 +85,6 @@ impl Page {
 #[derive(Debug, Clone)]
 pub struct TableLeafPage {
     pub header: PageHeader,
-    pub cell_pointers: Vec<u16>,
     pub cells: Vec<TableLeafCell>,
 }
 impl TableLeafPage {
@@ -69,16 +101,13 @@ impl TableLeafPage {
             header.cell_count as usize,
             ptr_offset,
         );
-        // println!("cell_pointers: {:#?}", cell_pointers);
         // 解析每个单元格
         let cells = cell_pointers
             .iter()
             .map(|ptr| TableLeafCell::parse(&buffer[*ptr as usize..]))
             .collect::<anyhow::Result<Vec<TableLeafCell>>>()?;
-        // println!("cells: {:#?}", cells);
         Ok(TableLeafPage {
             header,
-            cell_pointers,
             cells,
         })
     }
@@ -197,7 +226,6 @@ fn parse_cell_pointers(buffer: &[u8], cell_count: usize, ptr_offset: u16) -> Vec
 #[derive(Debug, Clone)]
 pub struct TableInteriorPage {
     pub header: PageHeader,
-    pub cell_pointers: Vec<u16>,
     pub cells: Vec<TableInteriorCell>,
 }
 
@@ -220,7 +248,6 @@ impl TableInteriorPage {
 
         Ok(TableInteriorPage {
             header,
-            cell_pointers,
             cells,
         })
     }

@@ -5,14 +5,14 @@ use std::{
     path::Path,
 };
 
-use anyhow::Context;
+use anyhow::{Context, Ok};
 
 use crate::{
     page::{Page, TableInteriorPage, TableLeafPage},
     record::Value,
     sql::{
         parser::{self, Expr, Literal, Stmt},
-        scanner,
+        scanner, token::TokenType,
     },
     utils::read_be_word_at,
 };
@@ -57,180 +57,131 @@ impl Db {
         let pager = Pager::new(file, header.page_size as usize);
         Ok(Db { header, pager })
     }
-    pub fn execute_sql(&mut self, sql: &str) -> anyhow::Result<()> {
+    pub fn execute_sql(&mut self, sql: &str) -> anyhow::Result<Vec<Vec<Vec<String>>>> {
         let mut scanner = scanner::Scanner::new(sql.to_string());
         let tokens = scanner.scan_tokens();
         let mut parser = parser::Parser::new(tokens.clone());
         let stmts = parser.parse().unwrap();
+        let mut result = Vec::new();
         for stmt in stmts {
             match stmt {
                 Stmt::Select(columns, from, where_clause) => {
                     if let Some(table_ref) = from {
                         if let Some(schema) = self.get_table_schema(&table_ref.name)? {
-                            self.execute_page(
-                                schema.root_page as usize,
-                                &columns,
-                                &schema,
-                                where_clause,
-                            )?;
+                            let page = self.read_page(schema.root_page as usize)?;
+                            let rows = match page {
+                                Page::TableLeaf(leaf_page) => self.query_leaf_page(&leaf_page, &columns, &schema, &where_clause),
+                                Page::TableInterior(interior_page) => self.query_interior_page(&interior_page, &columns, &schema, &where_clause),
+                                _ => anyhow::bail!("Unknown page type in query: {:?}", page.get_page_type()),
+                            }?;
+                        
+                            result.push(rows);
                         }
                     }
                 }
             }
         }
-        anyhow::Ok(())
+        anyhow::Ok(result)
     }
 
-    fn execute_page(
-        &mut self,
-        page_num: usize,
-        columns: &[Expr],
-        schema: &TableSchema,
-        where_clause: Option<Expr>,
-    ) -> anyhow::Result<()> {
-        let page = self.read_page(page_num)?;
-        match page {
-            Page::TableLeaf(table_page) => {
-                if columns.len() == 1 {
-                    if let Expr::FunctionCall(_, _) = &columns[0] {
-                        let value = self.execute_func(&columns[0], &table_page);
-                        println!("{}", value);
-                    } else {
-                        self.execute_query(columns, &table_page, schema, where_clause.clone());
-                    }
-                } else {
-                    self.execute_query(columns, &table_page, schema, where_clause.clone());
-                }
-            }
+    fn query_leaf_page(&mut self, leaf_page: &TableLeafPage, columns: &[Expr], schema: &TableSchema, where_clause: &Option<Expr>) -> anyhow::Result<Vec<Vec<String>>> {
+        let mut result = Vec::new();
+        for cell in &leaf_page.cells {
 
-            // TODO: 
-            Page::TableInterior(interior_page) => {
-                for cell in &interior_page.cells {
-                    self.execute_page(
-                        cell.left_child as usize,
-                        columns,
-                        schema,
-                        where_clause.clone(),
-                    )?;
-                }
-                let right_most_page = interior_page.header.get_right_most_point();
-                self.execute_page(
-                    right_most_page as usize,
-                    columns,
-                    schema,
-                    where_clause.clone(),
-                )?;
+            let mut row_map = HashMap::new();
+            for (column, record_body) in schema.columns.iter().zip(cell.record.body.iter()) {
+                let key = column.name.clone();
+                let value = record_body.value.to_string();
+                row_map.insert(key, value);
             }
-            _ => {}
-        }
-        Ok(())
-    }
+            if !self.where_clause_matches(where_clause, &row_map) {
+                continue;
+            }
+            let mut row = Vec::new();
 
-    fn execute_func(&mut self, func: &Expr, page: &TableLeafPage) -> String {
-        match func {
-            Expr::FunctionCall(name, args) => {
-                if let Expr::Identifier(func_name) = name.as_ref() {
-                    match func_name.as_str() {
-                        "count" => {
-                            if args.is_empty() {
-                                page.cells.len().to_string()
-                            } else {
-                                let mut count = 0;
-                                for cell in &page.cells {
-                                    if let Some(body) = cell.record.body.get(0) {
-                                        if body.value != Value::Null {
-                                            count += 1;
-                                        }
-                                    }
+            for column in columns {
+                match column {
+                    Expr::Identifier(name) => {
+                        if let Some(value) = row_map.get(name) {
+                            row.push(value.clone());
+                        } else {
+                            row.push("NULL".to_string());
+                        }
+                    },
+                    Expr::FunctionCall(name, args) => {
+                        if let Expr::Identifier(func_name) = name.as_ref() {
+                            match func_name.as_str() {
+                                "count" => {
+                                    let count = leaf_page.cells.len() as i64;
+                                    row.push(count.to_string());
+                                    return Ok(vec![row]);
                                 }
-                                count.to_string()
+                                _ => {}
                             }
                         }
-                        _ => "".to_string(),
-                    }
-                } else {
-                    "".to_string()
-                }
-            }
-            _ => "".to_string(),
-        }
-    }
-    fn execute_query(
-        &mut self,
-        columns: &[Expr],
-        table_page: &TableLeafPage,
-        schema: &TableSchema,
-        where_clause: Option<Expr>,
-    ) {
-        for cell in &table_page.cells {
-            let mut row_map = HashMap::new();
-            for (i, column) in schema.columns.iter().enumerate() {
-                let value = if let Some(body) = cell.record.body.get(i) {
-                    body.value.to_string()
-                } else {
-                    "Null".to_string()
-                };
-                row_map.insert(column.name.clone(), value);
-            }
-            let mut should_print = true;
-            if let Some(where_expr) = &where_clause {
-                match where_expr {
-                    Expr::BinaryOp(column, op, value) => {
-                        let column_name = match column.as_ref() {
-                            Expr::Identifier(name) => name,
-                            _ => continue,
-                        };
-                        let value_str = match value.as_ref() {
-                            Expr::Literal(Literal::String(s)) => s.clone(),
-                            Expr::Literal(Literal::Number(n)) => n.to_string(),
-                            _ => continue,
-                        };
-                        should_print = self.check(column_name, &value_str, &op.lexeme, &row_map);
                     }
                     _ => {}
                 }
+                
             }
-
-            if should_print {
-                let mut values = Vec::new();
-              
-                for column in columns {
-                    match column {
-                        Expr::Identifier(name) => {
-                            let null_str = "Null".to_string();
-                            let value = row_map.get(name).unwrap_or(&null_str);
-                            values.push(value.clone());
-                        }
-                        Expr::FunctionCall(_, _) => {
-                            let value = self.execute_func(column, table_page);
-                            values.push(value);
-                        }
-                        _ => {}
-                    }
+            result.push(row);
+        }
+        Ok(result)
+    }
+    fn query_interior_page(&mut self, interior_page: &TableInteriorPage, columns: &[Expr], schema: &TableSchema, where_clause: &Option<Expr>) -> anyhow::Result<Vec<Vec<String>>> {
+        let mut result = Vec::new();
+        for cell in &interior_page.cells {
+            let page = self.read_page(cell.left_child as usize)?;
+            match page {
+                Page::TableLeaf(leaf_page) => {
+                    let mut rows = self.query_leaf_page(&leaf_page, columns, schema, where_clause)?;
+                    result.append(&mut rows);
                 }
-                println!("{}", values.join("|"));
+                Page::TableInterior(interior_page) => {
+                    let mut rows = self.query_interior_page(&interior_page, columns, schema, where_clause)?;
+                    result.append(&mut rows);
+                }
+                _ => {}
             }
         }
+        Ok(result)
     }
 
+    fn where_clause_matches(&mut self, where_clause: &Option<Expr>, row_map: &HashMap<String, String>) -> bool {
+        match where_clause {
+            Some(expr) => self.check(expr, row_map),
+            None => true,
+        }
+    }
     fn check(
         &mut self,
-        where_column: &str,
-        where_value: &str,
-        where_op: &str,
+        where_expr: &Expr,
         row_map: &HashMap<String, String>,
     ) -> bool {
-        match row_map.get(where_column) {
-            Some(value) => match where_op {
-                "=" => value == where_value,
-                "!=" => value != where_value,
-                "<" => value.parse::<i64>().unwrap() < where_value.parse::<i64>().unwrap(),
-                ">" => value.parse::<i64>().unwrap() > where_value.parse::<i64>().unwrap(),
-                "<=" => value.parse::<i64>().unwrap() <= where_value.parse::<i64>().unwrap(),
-                ">=" => value.parse::<i64>().unwrap() >= where_value.parse::<i64>().unwrap(),
-                _ => false,
-            },
-            None => false,
+        match where_expr {
+            Expr::BinaryOp(left, op, right) => {
+                let left = if let Expr::Identifier(name) = left.as_ref() {
+                    row_map.get(name).unwrap().to_string()
+                } else {
+                    "".to_string()
+                };
+                let right = match right.as_ref() {
+                    Expr::Identifier(name) => row_map.get(name).unwrap().to_string(),
+                    Expr::Literal(literal) => match literal {
+                        Literal::String(s) => s.to_string(),
+                        Literal::Number(n) => n.to_string(),
+                        Literal::Boolean(b) => b.to_string(),
+                        Literal::Null => "NULL".to_string(),
+                    },
+                    _ => "".to_string(),
+                };
+ 
+                match op.token_type {
+                    TokenType::Equal => left == right,
+                    _ => false,
+                }
+            }
+            _ => false,
         }
     }
 

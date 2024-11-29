@@ -58,7 +58,13 @@ fn main() -> Result<()> {
         }
         sql => {
             let mut db = Db::from_file(&args[1])?;
-            let _ = db.execute_sql(sql);
+            let results = db.execute_sql(sql)?;
+            for rows in results {
+                for row in &rows {
+                   println!("{}", row.join("|")); 
+                }
+                
+            }
         }
         _ => bail!("Missing or invalid command passed: {}", command),
     }
