@@ -8,11 +8,12 @@ use std::{
 use anyhow::{Context, Ok};
 
 use crate::{
-    page::{Page, TableInteriorPage, TableLeafPage},
+    page::{IndexInteriorPage, IndexLeafPage, Page, TableInteriorPage, TableLeafPage},
     record::Value,
     sql::{
         parser::{self, Expr, Literal, Stmt},
-        scanner, token::TokenType,
+        scanner,
+        token::TokenType,
     },
     utils::read_be_word_at,
 };
@@ -45,6 +46,8 @@ impl DbHeader {
 pub struct Db {
     pub header: DbHeader,
     pub pager: Pager,
+    pub table_schemas: HashMap<String, TableSchema>,
+    pub index_schemas: HashMap<String, TableSchema>,
 }
 
 impl Db {
@@ -55,7 +58,12 @@ impl Db {
             .context("read db header")?;
         let header = DbHeader::parse(&header_buffer)?;
         let pager = Pager::new(file, header.page_size as usize);
-        Ok(Db { header, pager })
+        Ok(Db {
+            header,
+            pager,
+            table_schemas: HashMap::new(),
+            index_schemas: HashMap::new(),
+        })
     }
     pub fn execute_sql(&mut self, sql: &str) -> anyhow::Result<Vec<Vec<Vec<String>>>> {
         let mut scanner = scanner::Scanner::new(sql.to_string());
@@ -67,14 +75,48 @@ impl Db {
             match stmt {
                 Stmt::Select(columns, from, where_clause) => {
                     if let Some(table_ref) = from {
+                        if let Some(schema) = self.get_index_schema(&table_ref.name)? {
+                            let page = self.read_page(schema.root_page as usize)?;
+                            
+                            let rows = match page {
+                                Page::IndexLeaf(leaf_page) => self.get_row_leaf(
+                                    &leaf_page,
+                                    &columns,
+                                    &schema,
+                                    &where_clause,
+                                )?,
+                                Page::IndexInterior(interior_page) => self.get_row_interior(
+                                    &interior_page,
+                                    &columns,
+                                    &schema,
+                                    &where_clause,
+                                )?,
+                                _ => anyhow::bail!("not index leaf page"),
+                            };
+                            continue;
+                        }
                         if let Some(schema) = self.get_table_schema(&table_ref.name)? {
+                            // 索引信息不存在读取page
                             let page = self.read_page(schema.root_page as usize)?;
                             let rows = match page {
-                                Page::TableLeaf(leaf_page) => self.query_leaf_page(&leaf_page, &columns, &schema, &where_clause),
-                                Page::TableInterior(interior_page) => self.query_interior_page(&interior_page, &columns, &schema, &where_clause),
-                                _ => anyhow::bail!("Unknown page type in query: {:?}", page.get_page_type()),
+                                Page::TableLeaf(leaf_page) => self.query_leaf_page(
+                                    &leaf_page,
+                                    &columns,
+                                    &schema,
+                                    &where_clause,
+                                ),
+                                Page::TableInterior(interior_page) => self.query_interior_page(
+                                    &interior_page,
+                                    &columns,
+                                    &schema,
+                                    &where_clause,
+                                ),
+                                _ => anyhow::bail!(
+                                    "Unknown page type in query: {:?}",
+                                    page.get_page_type()
+                                ),
                             }?;
-                        
+
                             result.push(rows);
                         }
                     }
@@ -84,10 +126,37 @@ impl Db {
         anyhow::Ok(result)
     }
 
-    fn query_leaf_page(&mut self, leaf_page: &TableLeafPage, columns: &[Expr], schema: &TableSchema, where_clause: &Option<Expr>) -> anyhow::Result<Vec<Vec<String>>> {
+    fn get_row_leaf(
+        &mut self,
+        index_leaf_page: &IndexLeafPage,
+        columns: &[Expr],
+        schema: &TableSchema,
+        where_clause: &Option<Expr>,
+    ) -> anyhow::Result<Vec<Vec<String>>> {
+        let mut result = Vec::new();
+        anyhow::Ok(result)
+    }
+
+    fn get_row_interior(
+        &mut self,
+        index_interior_page: &IndexInteriorPage,
+        columns: &[Expr],
+        schema: &TableSchema,
+        where_clause: &Option<Expr>,
+    ) -> anyhow::Result<Vec<Vec<String>>> {
+        let mut result = Vec::new();
+        anyhow::Ok(result)
+    }
+
+    fn query_leaf_page(
+        &mut self,
+        leaf_page: &TableLeafPage,
+        columns: &[Expr],
+        schema: &TableSchema,
+        where_clause: &Option<Expr>,
+    ) -> anyhow::Result<Vec<Vec<String>>> {
         let mut result = Vec::new();
         for cell in &leaf_page.cells {
-
             let mut row_map = HashMap::new();
             for (column, record_body) in schema.columns.iter().zip(cell.record.body.iter()) {
                 let key = column.name.clone();
@@ -107,7 +176,7 @@ impl Db {
                         } else {
                             row.push("NULL".to_string());
                         }
-                    },
+                    }
                     Expr::FunctionCall(name, args) => {
                         if let Expr::Identifier(func_name) = name.as_ref() {
                             match func_name.as_str() {
@@ -122,23 +191,30 @@ impl Db {
                     }
                     _ => {}
                 }
-                
             }
             result.push(row);
         }
         Ok(result)
     }
-    fn query_interior_page(&mut self, interior_page: &TableInteriorPage, columns: &[Expr], schema: &TableSchema, where_clause: &Option<Expr>) -> anyhow::Result<Vec<Vec<String>>> {
+    fn query_interior_page(
+        &mut self,
+        interior_page: &TableInteriorPage,
+        columns: &[Expr],
+        schema: &TableSchema,
+        where_clause: &Option<Expr>,
+    ) -> anyhow::Result<Vec<Vec<String>>> {
         let mut result = Vec::new();
         for cell in &interior_page.cells {
             let page = self.read_page(cell.left_child as usize)?;
             match page {
                 Page::TableLeaf(leaf_page) => {
-                    let mut rows = self.query_leaf_page(&leaf_page, columns, schema, where_clause)?;
+                    let mut rows =
+                        self.query_leaf_page(&leaf_page, columns, schema, where_clause)?;
                     result.append(&mut rows);
                 }
                 Page::TableInterior(interior_page) => {
-                    let mut rows = self.query_interior_page(&interior_page, columns, schema, where_clause)?;
+                    let mut rows =
+                        self.query_interior_page(&interior_page, columns, schema, where_clause)?;
                     result.append(&mut rows);
                 }
                 _ => {}
@@ -147,17 +223,17 @@ impl Db {
         Ok(result)
     }
 
-    fn where_clause_matches(&mut self, where_clause: &Option<Expr>, row_map: &HashMap<String, String>) -> bool {
+    fn where_clause_matches(
+        &mut self,
+        where_clause: &Option<Expr>,
+        row_map: &HashMap<String, String>,
+    ) -> bool {
         match where_clause {
             Some(expr) => self.check(expr, row_map),
             None => true,
         }
     }
-    fn check(
-        &mut self,
-        where_expr: &Expr,
-        row_map: &HashMap<String, String>,
-    ) -> bool {
+    fn check(&mut self, where_expr: &Expr, row_map: &HashMap<String, String>) -> bool {
         match where_expr {
             Expr::BinaryOp(left, op, right) => {
                 let left = if let Expr::Identifier(name) = left.as_ref() {
@@ -175,7 +251,7 @@ impl Db {
                     },
                     _ => "".to_string(),
                 };
- 
+
                 match op.token_type {
                     TokenType::Equal => left == right,
                     _ => false,
@@ -192,9 +268,10 @@ impl Db {
         self.read_page(1)
     }
 
-    pub fn get_schemas(&mut self) -> anyhow::Result<Vec<TableSchema>> {
+    pub fn get_schemas(&mut self) -> anyhow::Result<()> {
         let first_page = self.read_first_page()?;
-        let mut schemas = Vec::new();
+        let mut table_schemas = HashMap::new();
+        let mut index_schemas = HashMap::new();
         if let Page::TableLeaf(page) = first_page {
             for cell in page.cells {
                 // 0: schema_type
@@ -202,56 +279,82 @@ impl Db {
                 // 2: table_name
                 // 3: rootpage
                 // 4: sql
+                let schema_type = match &cell.record.body.get(0) {
+                    Some(record_body) => match &record_body.value {
+                        Value::String(schema_type) => schema_type.clone(),
+                        _ => continue,
+                    },
+                    None => continue,
+                };
+                let name = match &cell.record.body.get(1).unwrap().value {
+                    Value::String(name) => name.clone(),
+                    _ => continue,
+                };
+                let root_page = match &cell.record.body.get(3).unwrap().value {
+                    Value::I64(n) => *n as i8,
+                    _ => continue,
+                };
+                let sql = match &cell.record.body.get(4).unwrap().value {
+                    Value::String(sql) => sql.clone(),
+                    _ => continue,
+                };
 
-                if let Some(schema_type_body) = cell.record.body.get(0) {
-                    if let Value::String(schema_type) = &schema_type_body.value {
-                        if schema_type == "table" {
-                            let name = match &cell.record.body.get(1).unwrap().value {
-                                Value::String(name) => name.clone(),
-                                _ => continue,
-                            };
-                            let root_page = match &cell.record.body.get(3).unwrap().value {
-                                Value::I64(n) => *n as i8,
-                                _ => continue,
-                            };
-                            let sql = match &cell.record.body.get(4).unwrap().value {
-                                Value::String(sql) => sql.clone(),
-                                _ => continue,
-                            };
-
-                            let columns = parse_create_table_sql(&sql)?;
-                            schemas.push(TableSchema {
+                let columns = parse_create_table_sql(&sql)?;
+                match schema_type.as_str() {
+                    "table" => {
+                        table_schemas.insert(
+                            name.clone(),
+                            TableSchema {
                                 name,
                                 sql,
                                 root_page,
                                 columns,
-                            });
-                        }
+                            },
+                        );
                     }
-                }
+                    "index" => {
+                        index_schemas.insert(
+                            name.clone(),
+                            TableSchema {
+                                name,
+                                sql,
+                                root_page,
+                                columns,
+                            },
+                        );
+                    }
+                    &_ => todo!(),
+                };
             }
         }
-        Ok(schemas)
+        anyhow::Ok(())
     }
-
+    pub fn get_index_schema(&mut self, table_name: &str) -> anyhow::Result<Option<TableSchema>> {
+        self.get_schemas()?;
+        let index_schema = self.index_schemas.get(table_name);
+        match index_schema {
+            Some(schema) => anyhow::Ok(Some(schema.clone())),
+            _ => anyhow::Ok(None),
+        }
+    }
     pub fn get_table_schema(&mut self, table_name: &str) -> anyhow::Result<Option<TableSchema>> {
-        let schemas = self.get_schemas()?;
-        // println!("schemas: {:#?}", schemas);
-        let schema = schemas
-            .into_iter()
-            .find(|s| s.name.to_lowercase() == table_name.to_lowercase());
-        anyhow::Ok(schema)
+        self.get_schemas()?;
+        let table_schema = self.table_schemas.get(table_name);
+        match table_schema {
+            Some(schema) => anyhow::Ok(Some(schema.clone())),
+            _ => anyhow::Ok(None),
+        }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TableSchema {
     name: String,
     sql: String,
     root_page: i8,
     columns: Vec<Column>,
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Column {
     name: String,
     type_name: String,

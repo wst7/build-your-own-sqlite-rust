@@ -8,6 +8,8 @@ use crate::{
 
 pub const TABLE_LEAF_PAGE_ID: u8 = 0x0d;
 pub const TABLE_INTERIOR_PAGE_ID: u8 = 0x05;
+pub const INDEX_LEAF_PAGE_ID: u8 = 0x0a;
+pub const INDEX_INTERIOR_PAGE_ID: u8 = 0x02;
 
 const PAGE_LEAF_HEADER_SIZE: usize = 8;
 const PAGE_INTERIOR_HEADER_SIZE: usize = 12;
@@ -44,6 +46,8 @@ const PAGE_RIGHT_MOST_POINTER_OFFSET: usize = 8;
 pub enum Page {
     TableLeaf(TableLeafPage),
     TableInterior(TableInteriorPage),
+    IndexLeaf(IndexLeafPage),
+    IndexInterior(IndexInteriorPage),
 }
 
 impl Page {
@@ -67,6 +71,14 @@ impl Page {
                 let page = TableInteriorPage::parse(buffer, ptr_offset)?;
                 Ok(Self::TableInterior(page))
             }
+            INDEX_LEAF_PAGE_ID => {
+                let page = IndexLeafPage::parse(buffer, ptr_offset)?;
+                Ok(Self::IndexLeaf(page))
+            }
+            INDEX_INTERIOR_PAGE_ID => {
+                let page = IndexInteriorPage::parse(buffer, ptr_offset)?;
+                Ok(Self::IndexInterior(page))
+            }
             _ => {
                 println!("page type: {}", page_type);
                 anyhow::bail!("Unknown page type in page parse: {}", page_type)
@@ -78,6 +90,8 @@ impl Page {
         match self {
             Page::TableLeaf(page) => page.header.get_page_type(),
             Page::TableInterior(page) => page.header.get_page_type(),
+            Page::IndexLeaf(page) => page.header.get_page_type(),
+            Page::IndexInterior(page) => page.header.get_page_type(),
         }
     }
 }
@@ -128,6 +142,8 @@ impl PageHeader {
         let page_type = match buffer[ptr_offset as usize] {
             TABLE_LEAF_PAGE_ID => PageType::TableLeaf,
             TABLE_INTERIOR_PAGE_ID => PageType::TableInterior,
+            INDEX_LEAF_PAGE_ID => PageType::IndexLeaf,
+            INDEX_INTERIOR_PAGE_ID => PageType::IndexInterior,
             other => anyhow::bail!("Unsupported page type: {}", other),
         };
 
@@ -180,6 +196,8 @@ impl PageHeader {
 pub enum PageType {
     TableLeaf,
     TableInterior,
+    IndexLeaf,
+    IndexInterior,
 }
 
 #[derive(Debug, Clone)]
@@ -264,5 +282,100 @@ impl TableInteriorCell {
         let left_child = u32::from_be_bytes(cell_buffer[0..4].try_into().unwrap());
         let (n, row_id) = read_varint(&cell_buffer[4..])?;
         Ok(TableInteriorCell { row_id, left_child })
+    }
+}
+
+
+#[derive(Debug, Clone)]
+pub struct IndexLeafPage {
+    pub header: PageHeader,
+    pub cells: Vec<IndexLeafCell>,
+}
+
+impl IndexLeafPage {
+    pub fn parse(buffer: &[u8], ptr_offset: u16) -> anyhow::Result<Self> {
+        let header = PageHeader::parse(buffer, ptr_offset)?;
+        let cell_pointer_area_start = ptr_offset as usize + PAGE_LEAF_HEADER_SIZE;
+        let cell_pointers = parse_cell_pointers(
+            &buffer[cell_pointer_area_start..],
+            header.cell_count as usize,
+            ptr_offset,
+        );
+        let cells = cell_pointers
+            .iter()
+            .map(|ptr| IndexLeafCell::parse(&buffer[*ptr as usize..]))
+            .collect::<anyhow::Result<Vec<IndexLeafCell>>>()?;
+        Ok(IndexLeafPage {
+            header,
+            cells,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct IndexLeafCell {
+    pub size: usize,
+    pub record: Record,
+}
+
+impl IndexLeafCell {
+    pub fn parse(cell_buffer: &[u8]) -> anyhow::Result<Self> {
+        let (n, payload_size) = read_varint(cell_buffer)?;
+        let buffer = &cell_buffer[n as usize..];
+
+        let record = Record::parse(buffer, 0)?;
+        Ok(Self {
+            size: payload_size as usize,
+            record,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct IndexInteriorPage {
+    pub header: PageHeader,
+    pub cells: Vec<IndexInteriorCell>,
+}
+
+impl IndexInteriorPage {
+    pub fn parse(buffer: &[u8], ptr_offset: u16) -> anyhow::Result<Self> {
+        let header = PageHeader::parse(buffer, ptr_offset)?;
+        let cell_pointer_area_start = ptr_offset as usize + PAGE_INTERIOR_HEADER_SIZE;
+        let cell_pointers = parse_cell_pointers(
+            &buffer[cell_pointer_area_start..],
+            header.cell_count as usize,
+            ptr_offset,
+        );
+        let cells = cell_pointers
+            .iter()
+            .map(|ptr| IndexInteriorCell::parse(&buffer[*ptr as usize..]))
+            .collect::<anyhow::Result<Vec<IndexInteriorCell>>>()?;
+
+        Ok(IndexInteriorPage {
+            header,
+            cells,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct IndexInteriorCell {
+    pub size: usize,
+    pub left_child: u32,
+    pub record: Record,
+}
+
+impl IndexInteriorCell {
+    pub fn parse(buffer: &[u8]) -> anyhow::Result<Self> {
+        let left_child = u32::from_be_bytes(buffer[0..4].try_into().unwrap());
+        let buffer = &buffer[4..];
+        let (n, payload_size) = read_varint(buffer)?;
+        let buffer = &buffer[n as usize..];
+        let record = Record::parse(buffer, 0)?;
+        Ok(Self {
+            size: payload_size as usize,
+            left_child,
+            record,
+        })
     }
 }
