@@ -140,7 +140,7 @@ impl Record {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub enum Value {
     Null,
     I64(i64),

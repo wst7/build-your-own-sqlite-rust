@@ -46,8 +46,8 @@ impl DbHeader {
 pub struct Db {
     pub header: DbHeader,
     pub pager: Pager,
-    pub table_schemas: HashMap<String, TableSchema>,
-    pub index_schemas: HashMap<String, TableSchema>,
+    pub table_schemas: HashMap<String, Schema>,
+    pub index_schemas: HashMap<String, Schema>,
 }
 
 impl Db {
@@ -76,23 +76,30 @@ impl Db {
                 Stmt::Select(columns, from, where_clause) => {
                     if let Some(table_ref) = from {
                         if let Some(schema) = self.get_index_schema(&table_ref.name)? {
-                            let page = self.read_page(schema.root_page as usize)?;
-                            
-                            let rows = match page {
-                                Page::IndexLeaf(leaf_page) => self.get_row_leaf(
-                                    &leaf_page,
-                                    &columns,
-                                    &schema,
-                                    &where_clause,
-                                )?,
-                                Page::IndexInterior(interior_page) => self.get_row_interior(
-                                    &interior_page,
-                                    &columns,
-                                    &schema,
-                                    &where_clause,
-                                )?,
-                                _ => anyhow::bail!("not index leaf page"),
+                            println!("index schema: {:#?}", schema);
+                            let query_value = match &where_clause {
+                                Some(Expr::BinaryOp(_, _, where_value)) => {
+                                    match where_value.as_ref() {
+                                        Expr::Literal(name) =>  {
+                                            match name {
+                                                Literal::String(name) => name,
+                                                _ => continue,
+                                            }
+                                        },
+                                        _ => continue,
+                                    }
+                                },
+                                _ => continue,
                             };
+                            println!("query value: {}", query_value);
+                            let page = self.read_page(schema.root_page as usize)?;
+                            let row_ids = self.get_row_ids(&page, &query_value)?;
+                            println!("row ids: {:#?}", row_ids);
+                            let mut rows = Vec::new();
+                            for row_id in row_ids {
+                                // 
+                            }
+                            result.push(rows);
                             continue;
                         }
                         if let Some(schema) = self.get_table_schema(&table_ref.name)? {
@@ -126,11 +133,50 @@ impl Db {
         anyhow::Ok(result)
     }
 
+    fn get_row_ids(&mut self, page: &Page, query_value: &str) -> anyhow::Result<Vec<usize>> {
+        let mut result = Vec::new();
+       
+        match page {
+            Page::IndexLeaf(leaf_page) => {
+                for cell in &leaf_page.cells {
+                    let key = cell.record.body[0].value.clone();
+                    if let Value::String(column_name) = key {
+                        if &column_name != query_value {
+                            continue;
+                        }
+                        let row_id = match cell.record.body.last().unwrap().value {
+                            Value::I64(i) => i as usize,
+                            _ => anyhow::bail!("Invalid row id"),
+                        };
+                        result.push(row_id);
+                    }
+                }
+            }
+            Page::IndexInterior(interior_page) => {
+                for cell in &interior_page.cells {
+                    let key = cell.record.body[0].value.clone();
+                    if Value::String(query_value.to_string()) >= key {
+                        let page = self.read_page(cell.left_child as usize)?;
+                        let row_ids = self.get_row_ids(&page, query_value)?;
+                        result.extend(row_ids);
+                    } else {
+                        let row_id = match cell.record.body.last().unwrap().value {
+                            Value::I64(i) => i as usize,
+                            _ => anyhow::bail!("Invalid row id"),
+                        };
+                        result.push(row_id);
+                    }
+                }
+            }
+            _ => anyhow::bail!("get_row_ids expected an index leaf page, found {:?}", page),
+        }
+        anyhow::Ok(result)
+    }
     fn get_row_leaf(
         &mut self,
         index_leaf_page: &IndexLeafPage,
         columns: &[Expr],
-        schema: &TableSchema,
+        schema: &Schema,
         where_clause: &Option<Expr>,
     ) -> anyhow::Result<Vec<Vec<String>>> {
         let mut result = Vec::new();
@@ -141,7 +187,7 @@ impl Db {
         &mut self,
         index_interior_page: &IndexInteriorPage,
         columns: &[Expr],
-        schema: &TableSchema,
+        schema: &Schema,
         where_clause: &Option<Expr>,
     ) -> anyhow::Result<Vec<Vec<String>>> {
         let mut result = Vec::new();
@@ -152,7 +198,7 @@ impl Db {
         &mut self,
         leaf_page: &TableLeafPage,
         columns: &[Expr],
-        schema: &TableSchema,
+        schema: &Schema,
         where_clause: &Option<Expr>,
     ) -> anyhow::Result<Vec<Vec<String>>> {
         let mut result = Vec::new();
@@ -200,7 +246,7 @@ impl Db {
         &mut self,
         interior_page: &TableInteriorPage,
         columns: &[Expr],
-        schema: &TableSchema,
+        schema: &Schema,
         where_clause: &Option<Expr>,
     ) -> anyhow::Result<Vec<Vec<String>>> {
         let mut result = Vec::new();
@@ -286,7 +332,11 @@ impl Db {
                     },
                     None => continue,
                 };
-                let name = match &cell.record.body.get(1).unwrap().value {
+                let schema_name = match &cell.record.body.get(1).unwrap().value {
+                    Value::String(name) => name.clone(),
+                    _ => continue,
+                };
+                let table_name = match &cell.record.body.get(2).unwrap().value {
                     Value::String(name) => name.clone(),
                     _ => continue,
                 };
@@ -299,13 +349,15 @@ impl Db {
                     _ => continue,
                 };
 
-                let columns = parse_create_table_sql(&sql)?;
+               
                 match schema_type.as_str() {
                     "table" => {
+                        let columns = parse_create_table_sql(&sql)?;
                         table_schemas.insert(
-                            name.clone(),
-                            TableSchema {
-                                name,
+                            table_name.clone(),
+                            Schema {
+                                schema_name,
+                                table_name,
                                 sql,
                                 root_page,
                                 columns,
@@ -313,10 +365,12 @@ impl Db {
                         );
                     }
                     "index" => {
+                        let columns = parse_create_index_sql(&sql)?;
                         index_schemas.insert(
-                            name.clone(),
-                            TableSchema {
-                                name,
+                            table_name.clone(),
+                            Schema {
+                                schema_name,
+                                table_name,
                                 sql,
                                 root_page,
                                 columns,
@@ -327,17 +381,20 @@ impl Db {
                 };
             }
         }
+        self.table_schemas = table_schemas;
+        self.index_schemas = index_schemas;
         anyhow::Ok(())
     }
-    pub fn get_index_schema(&mut self, table_name: &str) -> anyhow::Result<Option<TableSchema>> {
+    pub fn get_index_schema(&mut self, table_name: &str) -> anyhow::Result<Option<Schema>> {
         self.get_schemas()?;
+        println!("{:?}", self.index_schemas);
         let index_schema = self.index_schemas.get(table_name);
         match index_schema {
             Some(schema) => anyhow::Ok(Some(schema.clone())),
             _ => anyhow::Ok(None),
         }
     }
-    pub fn get_table_schema(&mut self, table_name: &str) -> anyhow::Result<Option<TableSchema>> {
+    pub fn get_table_schema(&mut self, table_name: &str) -> anyhow::Result<Option<Schema>> {
         self.get_schemas()?;
         let table_schema = self.table_schemas.get(table_name);
         match table_schema {
@@ -348,8 +405,9 @@ impl Db {
 }
 
 #[derive(Debug, Clone)]
-pub struct TableSchema {
-    name: String,
+pub struct Schema {
+    schema_name: String,
+    table_name: String,
     sql: String,
     root_page: i8,
     columns: Vec<Column>,
@@ -373,6 +431,25 @@ fn parse_create_table_sql(sql: &str) -> anyhow::Result<Vec<Column>> {
                         type_name: parts[1].to_string(),
                     });
                 }
+            }
+        }
+    }
+    anyhow::Ok(columns)
+}
+
+// "CREATE INDEX idx_companies_country\n\ton companies (country)"
+fn parse_create_index_sql(sql: &str) -> anyhow::Result<Vec<Column>> {
+    let mut columns = vec![];
+    let sql = sql.to_lowercase();
+    if let Some(start) = sql.find("(") {
+        if let Some(end) = sql.rfind(")") {
+            let column_defs = &sql[start + 1..end];
+            for column_def in column_defs.split(",") {
+                let parts = column_def.split_whitespace().collect::<Vec<&str>>();
+                columns.push(Column {
+                    name: parts[0].to_string(),
+                    type_name: "".to_string(),
+                });
             }
         }
     }
