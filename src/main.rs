@@ -56,6 +56,7 @@ fn main() -> Result<()> {
                 _ => bail!("Invalid page type"),
             }
         }
+        // https://saveriomiroddi.github.io/SQLIte-database-file-format-diagrams/
         sql => {
             let mut db = Db::from_file(&args[1])?;
             let results = db.execute_sql(sql)?;

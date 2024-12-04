@@ -1,0 +1,19 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "(lldb) 启动",
+            "type": "lldb",
+            "preLaunchTask": "build",
+            "request": "launch",
+            "program": "${workspaceFolder}/target/debug/codecrafters-sqlite",
+            "args": ["test.db", "SELECT id, name FROM companies WHERE country = 'republic of the congo'"],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "lldb",
+            "targetArchitecture": "arm64"
+        }
+    ]
+}

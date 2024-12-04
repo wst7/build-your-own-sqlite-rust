@@ -136,16 +136,13 @@ impl Db {
     }
 
     fn get_row_ids(&mut self, page: &Page, query_value: &str) -> anyhow::Result<Vec<usize>> {
-        println!("page type: {:?}", page.get_page_type());
+        // println!("page type: {:?}", page.get_page_type());
         match page {
             Page::IndexLeaf(leaf_page) => {
                 let mut result = Vec::new();
                 for cell in &leaf_page.cells {
                     let key = cell.record.body[0].value.clone();
-                    if let Value::String(column_name) = key {
-                        if &column_name != query_value {
-                            continue;
-                        }
+                    if key == Value::String(query_value.to_string()) {
                         let row_id = match cell.record.body.last().unwrap().value {
                             Value::I64(i) => i as usize,
                             _ => anyhow::bail!("Invalid row id"),
@@ -159,7 +156,6 @@ impl Db {
                 let mut result = Vec::new();
                 for cell in &interior_page.cells {
                     let key = cell.record.body[0].value.clone();
-                   
                     if key >= Value::String(query_value.to_string()) {
                         let page = self.read_page(cell.left_child as usize)?; 
                         let row_ids = self.get_row_ids(&page, query_value)?;
@@ -174,6 +170,9 @@ impl Db {
                         result.push(row_id);
                     }
                 }
+                let right_page = self.read_page(interior_page.header.get_right_most_point() as usize)?; 
+                let row_ids = self.get_row_ids(&right_page, query_value)?;
+                result.extend(row_ids);
                 anyhow::Ok(result)
             }
             Page::TableInterior(interior_page) => {
@@ -475,6 +474,7 @@ impl Db {
         }
         self.table_schemas = table_schemas;
         self.index_schemas = index_schemas;
+        // println!("index_schemas: {:#?}", self.index_schemas);
         anyhow::Ok(())
     }
     pub fn get_index_schema(&mut self, table_name: &str) -> anyhow::Result<Option<Schema>> {
