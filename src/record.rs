@@ -42,7 +42,6 @@ impl RecordHeader {
         
         while !buffer.is_empty() && current_offset < header_length as usize {
             let (byte_read, field_type) = read_varint(buffer)?;
-           
             let (field_type, field_size) = match field_type {
                 0 => (RecordFieldType::Null, 0),
                 1 => (RecordFieldType::I8, 1),
@@ -136,6 +135,7 @@ impl Record {
             body.push(RecordBody { value });
             offset += field.field_size;
         }
+        // println!("body: {:#?}", body);
         Ok(Record { header, body })
     }
 }
@@ -160,6 +160,26 @@ impl ToString for Value {
         }
     }
 }
+
+// impl PartialOrd for Value {
+//     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+//         match (self, other) {
+//             (Self::I64(a), Self::I64(b)) => a.partial_cmp(b),
+//             (Self::String(a), Self::String(b)) => a.partial_cmp(b),
+//             _ => None,
+//         }
+//     }
+// }
+// impl PartialEq for Value {
+//     fn eq(&self, other: &Self) -> bool {
+//         match (self, other) {
+//             (Self::I64(a), Self::I64(b)) => a == b,
+//             (Self::String(a), Self::String(b)) => a == b,
+//             _ => false,
+//         }
+//     }
+    
+// }
 pub fn read_i8_at(input: &[u8], offset: usize) -> i8 {
     input[offset] as i8
 }
@@ -169,7 +189,7 @@ pub fn read_i16_at(input: &[u8], offset: usize) -> i16 {
 }
 
 pub fn read_i24_at(input: &[u8], offset: usize) -> i32 {
-    i32::from_be_bytes(input[offset..offset + 3].try_into().unwrap())
+    i32::from_be_bytes([0, input[offset], input[offset + 1], input[offset + 2]])
 }
 
 pub fn read_i32_at(input: &[u8], offset: usize) -> i32 {

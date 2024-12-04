@@ -8,7 +8,7 @@ use std::{
 use anyhow::{Context, Ok};
 
 use crate::{
-    page::{IndexInteriorPage, IndexLeafPage, Page, TableInteriorPage, TableLeafPage},
+    page::{self, IndexInteriorPage, IndexLeafPage, Page, TableInteriorPage, TableLeafPage},
     record::Value,
     sql::{
         parser::{self, Expr, Literal, Stmt},
@@ -75,8 +75,8 @@ impl Db {
             match stmt {
                 Stmt::Select(columns, from, where_clause) => {
                     if let Some(table_ref) = from {
+                        // TODO: optimize
                         if let Some(schema) = self.get_index_schema(&table_ref.name)? {
-                            println!("index schema: {:#?}", schema);
                             let query_value = match &where_clause {
                                 Some(Expr::BinaryOp(_, _, where_value)) => {
                                     match where_value.as_ref() {
@@ -91,15 +91,17 @@ impl Db {
                                 },
                                 _ => continue,
                             };
-                            println!("query value: {}", query_value);
+                            // println!("index schema: {:#?}", schema);
                             let page = self.read_page(schema.root_page as usize)?;
+                           
                             let row_ids = self.get_row_ids(&page, &query_value)?;
-                            println!("row ids: {:#?}", row_ids);
-                            let mut rows = Vec::new();
-                            for row_id in row_ids {
-                                // 
+                 
+                            if let Some(table_schema) = self.get_table_schema(&table_ref.name)? {
+                                // println!("table_schema: {:#?}", table_schema);
+                                let page = self.read_page(table_schema.root_page as usize)?;
+                                let rows = self.get_rows(&page, &columns, &table_schema, row_ids)?;
+                                result.push(rows); 
                             }
-                            result.push(rows);
                             continue;
                         }
                         if let Some(schema) = self.get_table_schema(&table_ref.name)? {
@@ -134,10 +136,10 @@ impl Db {
     }
 
     fn get_row_ids(&mut self, page: &Page, query_value: &str) -> anyhow::Result<Vec<usize>> {
-        let mut result = Vec::new();
-       
+        println!("page type: {:?}", page.get_page_type());
         match page {
             Page::IndexLeaf(leaf_page) => {
+                let mut result = Vec::new();
                 for cell in &leaf_page.cells {
                     let key = cell.record.body[0].value.clone();
                     if let Value::String(column_name) = key {
@@ -151,47 +153,123 @@ impl Db {
                         result.push(row_id);
                     }
                 }
+                anyhow::Ok(result)
             }
             Page::IndexInterior(interior_page) => {
+                let mut result = Vec::new();
                 for cell in &interior_page.cells {
                     let key = cell.record.body[0].value.clone();
-                    if Value::String(query_value.to_string()) >= key {
-                        let page = self.read_page(cell.left_child as usize)?;
+                   
+                    if key >= Value::String(query_value.to_string()) {
+                        let page = self.read_page(cell.left_child as usize)?; 
                         let row_ids = self.get_row_ids(&page, query_value)?;
                         result.extend(row_ids);
-                    } else {
+                    }
+                    if key == Value::String(query_value.to_string()) {
                         let row_id = match cell.record.body.last().unwrap().value {
                             Value::I64(i) => i as usize,
                             _ => anyhow::bail!("Invalid row id"),
                         };
+                       
                         result.push(row_id);
                     }
                 }
+                anyhow::Ok(result)
             }
-            _ => anyhow::bail!("get_row_ids expected an index leaf page, found {:?}", page),
+            Page::TableInterior(interior_page) => {
+                anyhow::bail!("get_row_ids expected an index page, found {:?}", page.get_page_type())
+            }
+            Page::TableLeaf(leaf_page) => {
+                anyhow::bail!("get_row_ids expected an index page, found {:?}", page.get_page_type())
+            }
         }
-        anyhow::Ok(result)
     }
-    fn get_row_leaf(
+
+    fn get_rows(
         &mut self,
-        index_leaf_page: &IndexLeafPage,
+        page: &Page,
         columns: &[Expr],
         schema: &Schema,
-        where_clause: &Option<Expr>,
+        row_ids: Vec<usize>,
     ) -> anyhow::Result<Vec<Vec<String>>> {
-        let mut result = Vec::new();
+        match page {
+            Page::TableLeaf(leaf_page) => self.get_rows_leaf(leaf_page, columns, schema, row_ids),
+            Page::TableInterior(interior_page) => self.get_rows_interior(interior_page, columns, schema, row_ids),
+            _ => anyhow::bail!("get_row_by_row_id expected a table leaf page, found {:?}", page),
+        }
+    }
+
+
+    fn get_rows_leaf(
+        &mut self,
+        leaf_page: &TableLeafPage,
+        columns: &[Expr],
+        schema: &Schema,
+        row_ids: Vec<usize>,
+    ) -> anyhow::Result<Vec<Vec<String>>> {
+       let mut result = Vec::new();
+       let column_names = columns.iter().map(|column| match column {
+            Expr::Identifier(name) => name.clone(),
+            _ => String::new(),
+        }).collect::<Vec<String>>();
+        for cell in &leaf_page.cells {
+            let mut row_map = HashMap::new();
+            for (column, record_body) in schema.columns.iter().zip(cell.record.body.iter()) {
+                // println!("column: {:?}", column);
+                let key = column.name.clone();
+                if column_names.contains(&key) {
+                    let value = &record_body.value;
+                    row_map.insert(key, value);
+                }
+            }
+            let id = match row_map.get("id") {
+                Some(Value::I64(i)) => *i as usize,
+                _ => anyhow::bail!("Invalid row id"),
+            };
+            if !row_ids.contains(&id) {
+                continue;
+            }
+            let mut row = Vec::new();
+            for column in columns {
+                match column {
+                    Expr::Identifier(name) => {
+                        if let Some(value) = row_map.get(name) {
+                            row.push(match value {
+                                Value::I64(i) => i.to_string(),
+                                Value::String(s) => s.clone(),
+                                _ => anyhow::bail!("Invalid value type"),
+                            });
+                        }
+                    }
+                    
+                    _ => {}
+                }
+            }
+            result.push(row);
+        }
+
         anyhow::Ok(result)
     }
 
-    fn get_row_interior(
+    fn get_rows_interior(
         &mut self,
-        index_interior_page: &IndexInteriorPage,
+        interior_page: &TableInteriorPage,
         columns: &[Expr],
         schema: &Schema,
-        where_clause: &Option<Expr>,
+        row_ids: Vec<usize>,
     ) -> anyhow::Result<Vec<Vec<String>>> {
-        let mut result = Vec::new();
-        anyhow::Ok(result)
+        let mut rows = Vec::new();
+        for cell in &interior_page.cells {
+            if row_ids.iter().any(|id| *id < cell.row_id as usize) {
+                let page = self.read_page(cell.left_child as usize)?;
+                let _rows = self.get_rows(&page, columns, schema, row_ids.clone())?;
+                rows.extend(_rows);
+            }
+        }
+        let page = self.read_page(interior_page.header.get_right_most_point() as usize)?;
+        let _rows = self.get_rows(&page, columns, schema, row_ids.clone())?;
+        rows.extend(_rows);
+        anyhow::Ok(rows)
     }
 
     fn query_leaf_page(
@@ -265,6 +343,20 @@ impl Db {
                 }
                 _ => {}
             }
+        }
+        let right_page = self.read_page(interior_page.header.get_right_most_point() as usize)?;
+        match right_page {
+            Page::TableLeaf(leaf_page) => {
+                let mut rows =
+                    self.query_leaf_page(&leaf_page, columns, schema, where_clause)?;
+                result.append(&mut rows);
+            }
+            Page::TableInterior(interior_page) => {
+                let mut rows =
+                    self.query_interior_page(&interior_page, columns, schema, where_clause)?;
+                result.append(&mut rows);
+            }
+            _ => {}
         }
         Ok(result)
     }
@@ -387,7 +479,6 @@ impl Db {
     }
     pub fn get_index_schema(&mut self, table_name: &str) -> anyhow::Result<Option<Schema>> {
         self.get_schemas()?;
-        println!("{:?}", self.index_schemas);
         let index_schema = self.index_schemas.get(table_name);
         match index_schema {
             Some(schema) => anyhow::Ok(Some(schema.clone())),
@@ -417,6 +508,8 @@ pub struct Column {
     name: String,
     type_name: String,
 }
+
+
 fn parse_create_table_sql(sql: &str) -> anyhow::Result<Vec<Column>> {
     let mut columns = vec![];
     let sql = sql.to_lowercase();
@@ -424,7 +517,16 @@ fn parse_create_table_sql(sql: &str) -> anyhow::Result<Vec<Column>> {
         if let Some(end) = sql.rfind(")") {
             let column_defs = &sql[start + 1..end];
             for column_def in column_defs.split(",") {
-                let parts = column_def.split_whitespace().collect::<Vec<&str>>();
+                let column = column_def.trim();
+                if column.starts_with('"') {
+                    let parts = column.split('"').collect::<Vec<&str>>();
+                    columns.push(Column {
+                        name: parts[1].to_string(),
+                        type_name: parts[2].trim().to_string(),
+                    });
+                    continue;
+                }
+                let parts = column.split_whitespace().collect::<Vec<&str>>();
                 if parts.len() >= 2 {
                     columns.push(Column {
                         name: parts[0].to_string(),

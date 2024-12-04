@@ -80,7 +80,6 @@ impl Page {
                 Ok(Self::IndexInterior(page))
             }
             _ => {
-                println!("page type: {}", page_type);
                 anyhow::bail!("Unknown page type in page parse: {}", page_type)
             }
         }
@@ -158,7 +157,7 @@ impl PageHeader {
 
         let fragmented_bytes_count =
             buffer[ptr_offset as usize + PAGE_FRAGMENTED_BYTES_COUNT_OFFSET];
-        let right_most_point = if page_type == PageType::TableLeaf {
+        let right_most_point = if page_type == PageType::TableLeaf || page_type == PageType::IndexLeaf {
             0
         } else {
             u32::from_be_bytes(
@@ -223,7 +222,6 @@ impl TableLeafCell {
 
         let payload = buffer[..payload_size as usize].to_vec();
         let record = Record::parse(&payload, row_id)?;
-
         Ok(Self {
             size: payload_size as u64,
             row_id,
@@ -280,7 +278,8 @@ pub struct TableInteriorCell {
 impl TableInteriorCell {
     pub fn parse(cell_buffer: &[u8]) -> anyhow::Result<Self> {
         let left_child = u32::from_be_bytes(cell_buffer[0..4].try_into().unwrap());
-        let (n, row_id) = read_varint(&cell_buffer[4..])?;
+        let buffer = &cell_buffer[4..];
+        let (n, row_id) = read_varint(buffer)?;
         Ok(TableInteriorCell { row_id, left_child })
     }
 }
